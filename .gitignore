@@ -1,6 +1,7 @@
 hf_download/
 outputs/
 repo/
+.conda/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

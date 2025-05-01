@@ -1,6 +1,10 @@
 from diffusers_helper.hf_login import login
 
 import os
+import psutil
+import time
+import platform
+import torch
 
 os.environ['HF_HOME'] = os.path.abspath(os.path.realpath(os.path.join(os.path.dirname(__file__), './hf_download')))
 
@@ -99,23 +103,129 @@ outputs_folder = './outputs/'
 os.makedirs(outputs_folder, exist_ok=True)
 
 
+def get_hardware_info():
+    # Get OS and architecture information
+    os_name = platform.system()
+    os_version = platform.version()
+    architecture = platform.machine()
+    
+    # Get Linux-specific information if available
+    linux_info = ""
+    if os_name.lower() == 'linux':
+        try:
+            with open('/etc/os-release', 'r') as f:
+                for line in f:
+                    if line.startswith('PRETTY_NAME='):
+                        distro = line.split('=')[1].strip().strip('"')
+                        linux_info = f"{distro}"
+                        break
+        except:
+            pass
+        
+        try:
+            kernel_version = platform.release()
+            if linux_info:
+                linux_info = f"{linux_info} (Kernel {kernel_version})"
+            else:
+                linux_info = f"Linux (Kernel {kernel_version})"
+        except:
+            if not linux_info:
+                linux_info = "Linux"
+    
+    # Format system info
+    if os_name.lower() == 'linux':
+        system_info = f"{linux_info} | {architecture}"
+    else:
+        system_info = f"{os_name} {os_version} | {architecture}"
+    
+    # Get GPU information with VRAM
+    gpu_info = "CPU"
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # Convert to GB
+        gpu_info = f"{gpu_name} ({gpu_vram:.1f}GB VRAM)"
+    
+    # Get RAM information
+    ram_info = f"{psutil.virtual_memory().total / (1024**3):.1f}GB"
+    
+    return {
+        'System': system_info,
+        'GPU': gpu_info,
+        'RAM': ram_info
+    }
+
+def save_generation_info(subdir_path, prompt, seed, steps, gs, generation_time, video_length, total_frames, hardware_info, total_second_length, latent_window_size, rs, gpu_memory_preservation, use_teacache, mp4_crf):
+    # Save text format
+    with open(os.path.join(subdir_path, 'geninfo.txt'), 'w') as f:
+        f.write(f"Prompt: {prompt}\n")
+        f.write(f"Seed: {seed}\n")
+        f.write(f"Steps: {steps}\n")
+        f.write(f"Distilled CFG Scale: {gs}\n")
+        f.write(f"\nGeneration Time: {generation_time:.1f} seconds\n")
+        f.write(f"Video Length: {video_length:.1f} seconds\n")
+        f.write(f"Total Frames: {total_frames}\n")
+        f.write(f"Hardware:\n")
+        f.write(f"  System: {hardware_info['System']}\n")
+        f.write(f"  GPU: {hardware_info['GPU']}\n")
+        f.write(f"  RAM: {hardware_info['RAM']}\n")
+        f.write(f"Settings:\n")
+        f.write(f"  Total Second Length: {total_second_length}\n")
+        f.write(f"  Latent Window Size: {latent_window_size}\n")
+        f.write(f"  Distilled Guidance Scale: {gs}\n")
+        f.write(f"  Guidance Rescale: {rs}\n")
+        f.write(f"  GPU Memory Preservation: {gpu_memory_preservation}GB\n")
+        f.write(f"  Use TeaCache: {use_teacache}\n")
+        f.write(f"  MP4 CRF: {mp4_crf}\n")
+
+    # Save JSON format
+    import json
+    gen_info = {
+        "prompt": prompt,
+        "seed": seed,
+        "steps": steps,
+        "distilled_cfg_scale": gs,
+        "generation_time": round(generation_time, 1),
+        "video_length": round(video_length, 1),
+        "total_frames": total_frames,
+        "hardware": {
+            "system": hardware_info['System'],
+            "gpu": hardware_info['GPU'],
+            "ram": hardware_info['RAM']
+        },
+        "settings": {
+            "total_second_length": total_second_length,
+            "latent_window_size": latent_window_size,
+            "distilled_guidance_scale": gs,
+            "guidance_rescale": rs,
+            "gpu_memory_preservation": gpu_memory_preservation,
+            "use_teacache": use_teacache,
+            "mp4_crf": mp4_crf
+        }
+    }
+    with open(os.path.join(subdir_path, 'geninfo.json'), 'w') as f:
+        json.dump(gen_info, f, indent=2)
+
 @torch.no_grad()
 def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf):
-    total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
-    total_latent_sections = int(max(round(total_latent_sections), 1))
-
-    job_id = generate_timestamp()
-
-    stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Starting ...'))))
-
     try:
-        # Clean GPU
-        if not high_vram:
-            unload_complete_models(
-                text_encoder, text_encoder_2, image_encoder, vae, transformer
-            )
+        start_time = time.time()
+        total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
+        total_latent_sections = int(max(round(total_latent_sections), 1))
 
-        # Text encoding
+        # Handle random seed
+        if seed == -1:
+            seed = torch.randint(0, 2**32 - 1, (1,)).item()
+            print(f"Using random seed: {seed}")
+            stream.output_queue.push(('progress', (None, f'Using random seed: {seed}', make_progress_bar_html(0, 'Starting ...'))))
+        else:
+            print(f"Using provided seed: {seed}")
+            stream.output_queue.push(('progress', (None, f'Using provided seed: {seed}', make_progress_bar_html(0, 'Starting ...'))))
+
+        # Create unique ID for this generation
+        unique_id = generate_timestamp()
+        subdir_name = f"seed{seed}_{unique_id}"
+        subdir_path = os.path.join(outputs_folder, subdir_name)
+        os.makedirs(subdir_path, exist_ok=True)
 
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Text encoding ...'))))
 
@@ -141,7 +251,14 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         height, width = find_nearest_bucket(H, W, resolution=640)
         input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
 
-        Image.fromarray(input_image_np).save(os.path.join(outputs_folder, f'{job_id}.png'))
+        Image.fromarray(input_image_np).save(os.path.join(subdir_path, f'initial_image.png'))
+
+        # Save prompt to text file
+        with open(os.path.join(subdir_path, 'geninfo.txt'), 'w') as f:
+            f.write(f"Prompt: {prompt}\n")
+            f.write(f"Seed: {seed}\n")
+            f.write(f"Steps: {steps}\n")
+            f.write(f"Distilled CFG Scale: {gs}\n")
 
         input_image_pt = torch.from_numpy(input_image_np).float() / 127.5 - 1
         input_image_pt = input_image_pt.permute(2, 0, 1)[None, :, None]
@@ -221,21 +338,31 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 transformer.initialize_teacache(enable_teacache=False)
 
             def callback(d):
-                preview = d['denoised']
-                preview = vae_decode_fake(preview)
+                try:
+                    if stream.input_queue.top() == 'end':
+                        stream.output_queue.push(('end', None))
+                        raise KeyboardInterrupt('User ends the task.')
 
-                preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
-                preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
+                    preview = d['denoised']
+                    preview = vae_decode_fake(preview)
 
-                if stream.input_queue.top() == 'end':
-                    stream.output_queue.push(('end', None))
-                    raise KeyboardInterrupt('User ends the task.')
+                    preview = (preview * 255.0).detach().cpu().numpy().clip(0, 255).astype(np.uint8)
+                    preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
 
-                current_step = d['i'] + 1
-                percentage = int(100.0 * current_step / steps)
-                hint = f'Sampling {current_step}/{steps}'
-                desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
-                stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
+                    current_step = d['i'] + 1
+                    percentage = int(100.0 * current_step / steps)
+                    hint = f'Sampling {current_step}/{steps}'
+                    desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+                    stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    if stream.input_queue.top() == 'end':
+                        stream.output_queue.push(('end', None))
+                        raise KeyboardInterrupt('User ends the task.')
+                    else:
+                        print(f"Error in callback: {e}")
+                        stream.output_queue.push(('progress', (None, f"Error: {str(e)}", make_progress_bar_html(0, 'Error occurred'))))
                 return
 
             generated_latents = sample_hunyuan(
@@ -293,9 +420,14 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             if not high_vram:
                 unload_complete_models()
 
-            output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
+            output_filename = os.path.join(subdir_path, f'final_video.mp4')
 
             save_bcthw_as_mp4(history_pixels, output_filename, fps=30, crf=mp4_crf)
+
+            # Delete intermediate files
+            for file in os.listdir(subdir_path):
+                if file not in ['initial_image.png', 'geninfo.txt', 'final_video.mp4']:
+                    os.remove(os.path.join(subdir_path, file))
 
             print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
 
@@ -303,9 +435,22 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
 
             if is_last_section:
                 break
+
+        end_time = time.time()
+        generation_time = end_time - start_time
+        total_frames = total_generated_latent_frames * 4 - 3
+        video_length = total_frames / 30.0
+
+        # Save generation information
+        hardware_info = get_hardware_info()
+        save_generation_info(
+            subdir_path, prompt, seed, steps, gs, generation_time, 
+            video_length, total_frames, hardware_info, total_second_length, 
+            latent_window_size, rs, gpu_memory_preservation, use_teacache, mp4_crf
+        )
+
     except:
         traceback.print_exc()
-
         if not high_vram:
             unload_complete_models(
                 text_encoder, text_encoder_2, image_encoder, vae, transformer
@@ -319,32 +464,158 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
     global stream
     assert input_image is not None, 'No input image!'
 
-    yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
+    yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False), gr.update()
 
     stream = AsyncStream()
 
     async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf)
 
     output_filename = None
+    metadata_txt_path = None
+    metadata_json_path = None
 
     while True:
         flag, data = stream.output_queue.next()
 
         if flag == 'file':
             output_filename = data
-            yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True)
+            yield output_filename, gr.update(), gr.update(), gr.update(), gr.update(interactive=False), gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False), gr.update()
 
         if flag == 'progress':
             preview, desc, html = data
-            yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True)
+            yield gr.update(), gr.update(visible=True, value=preview), desc, html, gr.update(interactive=False), gr.update(interactive=True), gr.update(visible=False), gr.update(visible=False), gr.update()
 
         if flag == 'end':
-            yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False)
+            if output_filename:
+                subdir_path = os.path.dirname(output_filename)
+                metadata_txt_path = os.path.join(subdir_path, 'geninfo.txt')
+                metadata_json_path = os.path.join(subdir_path, 'geninfo.json')
+                if os.path.exists(metadata_txt_path) and os.path.exists(metadata_json_path):
+                    yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False), gr.update(value=metadata_txt_path, visible=True), gr.update(value=metadata_json_path, visible=True), update_generation_list()
+                else:
+                    yield output_filename, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False), gr.update(visible=False), gr.update(visible=False), update_generation_list()
+            else:
+                yield None, gr.update(visible=False), gr.update(), '', gr.update(interactive=True), gr.update(interactive=False), gr.update(visible=False), gr.update(visible=False), update_generation_list()
             break
 
 
 def end_process():
     stream.input_queue.push('end')
+
+
+def load_previous_generation(gen_path):
+    try:
+        with open(os.path.join(gen_path, 'geninfo.txt'), 'r') as f:
+            lines = f.readlines()
+            settings = {}
+            for line in lines:
+                if ': ' in line:  # Only process lines with the expected format
+                    key, value = line.strip().split(': ', 1)
+                    settings[key] = value
+            
+            return {
+                'prompt': settings.get('Prompt', ''),
+                'seed': int(settings.get('Seed', -1)),
+                'steps': int(settings.get('Steps', 25)),
+                'gs': float(settings.get('Distilled CFG Scale', 10.0))
+            }
+    except Exception as e:
+        print(f"Error loading previous generation: {e}")
+        return None
+
+def format_generation_name(dir_name, settings):
+    try:
+        # Extract seed and timestamp from directory name
+        parts = dir_name.split('_')
+        if len(parts) < 2:
+            return dir_name
+            
+        seed = parts[0].replace('seed', '')
+        timestamp = parts[1] if len(parts) > 1 else ''
+        
+        # Format date and time from timestamp if available
+        if timestamp and len(timestamp) >= 13:
+            try:
+                date = timestamp[:6]  # YYMMDD
+                time = timestamp[7:13]  # HHMMSS
+                formatted_time = f"{date[:2]}/{date[2:4]}/{date[4:6]} {time[:2]}:{time[2:4]}:{time[4:6]}"
+            except:
+                formatted_time = timestamp
+        else:
+            formatted_time = timestamp if timestamp else "Unknown Time"
+        
+        # Get other settings from the settings dictionary
+        steps = settings.get('steps', 'Unknown')
+        gs = settings.get('gs', 'Unknown')
+        
+        return f"Seed: {seed} | Steps: {steps} | CFG: {gs} | {formatted_time}"
+    except Exception as e:
+        print(f"Error formatting generation name {dir_name}: {e}")
+        return dir_name
+
+def get_previous_generations():
+    generations = []
+    if os.path.exists(outputs_folder):
+        for dir_name in os.listdir(outputs_folder):
+            if dir_name.startswith('seed') and os.path.isdir(os.path.join(outputs_folder, dir_name)):
+                gen_path = os.path.join(outputs_folder, dir_name)
+                if os.path.exists(os.path.join(gen_path, 'geninfo.txt')):
+                    try:
+                        settings = load_previous_generation(gen_path)
+                        if settings:
+                            generations.append({
+                                'path': gen_path,
+                                'name': dir_name,
+                                'display_name': format_generation_name(dir_name, settings),
+                                'settings': settings
+                            })
+                    except Exception as e:
+                        print(f"Error processing generation {dir_name}: {e}")
+                        continue
+    # Sort generations by timestamp (newest first)
+    try:
+        generations.sort(key=lambda x: x['name'].split('_')[-1] if len(x['name'].split('_')) > 1 else '', reverse=True)
+    except Exception as e:
+        print(f"Error sorting generations: {e}")
+    return generations
+
+def update_generation_list():
+    previous_gens = get_previous_generations()
+    return gr.update(
+        choices=[gen['display_name'] for gen in previous_gens],
+        visible=len(previous_gens) > 0
+    )
+
+def load_generation_settings(display_name):
+    # Get all generations
+    previous_gens = get_previous_generations()
+    
+    # Find the matching generation by display name
+    matching_gen = next((gen for gen in previous_gens if gen['display_name'] == display_name), None)
+    if not matching_gen:
+        return None, None, None, None, None, gr.update(visible=False), gr.update(value="Failed to load settings")
+    
+    gen_path = matching_gen['path']
+    settings = load_previous_generation(gen_path)
+    if settings:
+        # Load the initial image
+        initial_image_path = os.path.join(gen_path, 'initial_image.png')
+        if os.path.exists(initial_image_path):
+            initial_image = np.array(Image.open(initial_image_path))
+        else:
+            initial_image = None
+            print(f"Warning: Could not find initial image at {initial_image_path}")
+
+        return (
+            initial_image,
+            settings['prompt'],
+            settings['seed'],
+            settings['steps'],
+            settings['gs'],
+            gr.update(visible=True),
+            gr.update(value=f"Loaded settings from {matching_gen['display_name']}")
+        )
+    return None, None, None, None, None, gr.update(visible=False), gr.update(value="Failed to load settings")
 
 
 quick_prompts = [
@@ -365,6 +636,16 @@ with block:
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
 
+            with gr.Accordion("Load Previous Generation", open=False):
+                previous_gens = get_previous_generations()
+                gen_dropdown = gr.Dropdown(
+                    choices=[gen['display_name'] for gen in previous_gens],
+                    label="Select Previous Generation",
+                    visible=len(previous_gens) > 0
+                )
+                load_gen_button = gr.Button("Load Settings", visible=len(previous_gens) > 0)
+                load_status = gr.Markdown("", visible=False)
+
             with gr.Row():
                 start_button = gr.Button(value="Start Generation")
                 end_button = gr.Button(value="End Generation", interactive=False)
@@ -373,7 +654,7 @@ with block:
                 use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
 
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
-                seed = gr.Number(label="Seed", value=31337, precision=0)
+                seed = gr.Number(label="Seed", value=31337, precision=0, info="Use -1 for random seed")
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
@@ -390,6 +671,9 @@ with block:
         with gr.Column():
             preview_image = gr.Image(label="Next Latents", height=200, visible=False)
             result_video = gr.Video(label="Finished Frames", autoplay=True, show_share_button=False, height=512, loop=True)
+            with gr.Row():
+                metadata_txt = gr.File(label="Download Metadata (TXT)", visible=False)
+                metadata_json = gr.File(label="Download Metadata (JSON)", visible=False)
             gr.Markdown('Note that the ending actions will be generated before the starting actions due to the inverted sampling. If the starting action is not in the video, you just need to wait, and it will be generated later.')
             progress_desc = gr.Markdown('', elem_classes='no-generating-animation')
             progress_bar = gr.HTML('', elem_classes='no-generating-animation')
@@ -397,8 +681,30 @@ with block:
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
     ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf]
-    start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
+    start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button, metadata_txt, metadata_json, gen_dropdown])
     end_button.click(fn=end_process)
+    load_gen_button.click(
+        fn=load_generation_settings,
+        inputs=[gen_dropdown],
+        outputs=[input_image, prompt, seed, steps, gs, load_status, load_status]
+    )
+
+    # Update generation list when generation completes or ends
+    start_button.click(
+        fn=lambda: None,
+        inputs=[],
+        outputs=[],
+    ).then(
+        fn=update_generation_list,
+        inputs=[],
+        outputs=[gen_dropdown]
+    )
+
+    end_button.click(
+        fn=update_generation_list,
+        inputs=[],
+        outputs=[gen_dropdown]
+    )
 
 
 block.launch(

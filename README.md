@@ -18,6 +18,107 @@ FramePack can be trained with a much larger batch size, similar to the batch siz
 
 **Video diffusion, but feels like image diffusion.**
 
+## Key Features
+
+- **Progressive Video Generation**: Generates videos frame-by-frame or section-by-section, providing real-time visual feedback
+- **Memory Efficient**: Can generate 1-minute videos (1800 frames) with just 6GB GPU memory
+- **Hardware Flexibility**: Works on both desktop and laptop GPUs (RTX 30XX, 40XX, 50XX series)
+- **Multiple Attention Backends**: Supports PyTorch attention, xformers, flash-attn, and sage-attention
+- **High Performance**: 
+  - RTX 4090: 2.5s/frame (unoptimized) or 1.5s/frame (with teacache)
+  - Laptop GPUs: 4x-8x slower but still functional
+- **Memory Management**: 
+  - Dynamic memory swapping for low VRAM systems
+  - High VRAM mode for systems with >60GB VRAM
+  - GPU memory preservation settings
+- **Quality Control**:
+  - TeaCache optimization for faster generation
+  - Configurable video length (1-120 seconds)
+  - Adjustable CFG scale and steps
+  - MP4 compression quality control
+- **User Interface**:
+  - Image upload and prompt input
+  - Real-time preview of generated frames
+  - Progress tracking with progress bar
+  - Metadata export (TXT and JSON)
+  - Previous generation history and settings loading
+- **Advanced Features**:
+  - Support for negative prompts
+  - Customizable seed for reproducible results
+  - Latent window size control
+  - Hardware information display
+  - Automatic model downloading and updates
+
+# Docker Setup and Usage
+
+FramePack can be run using Docker, which provides an isolated environment with all dependencies pre-configured.
+
+## Prerequisites
+
+### Linux (Ubuntu/Debian-based)
+```bash
+# Install NVIDIA Container Toolkit
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
+   && curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add - \
+   && curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+```
+
+### Linux (Arch-based)
+```bash
+# Install NVIDIA Container Toolkit
+yay -S nvidia-container-toolkit
+
+# Enable NVIDIA Container Toolkit
+sudo systemctl enable --now nvidia-container-toolkit
+```
+
+### Windows
+1. Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop)
+2. Install [NVIDIA Container Toolkit for Windows](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html#docker-desktop-for-windows)
+3. Enable WSL 2 backend in Docker Desktop settings
+4. Enable GPU support in Docker Desktop settings
+
+## Building and Running
+
+### Using Docker Compose (Recommended)
+```bash
+# Build and start the container
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the container
+docker-compose down
+```
+
+### Using Docker Run
+```bash
+# Build the image
+docker build -t framepack .
+
+# Run the container
+docker run --gpus all \
+  -p 7860:7860 \
+  -v $(pwd)/outputs:/app/outputs \
+  --shm-size=2gb \
+  --name framepack \
+  framepack
+```
+
+The web interface will be available at `http://localhost:7860`
+
+## Notes
+- The container uses NVIDIA GPU acceleration
+- Generated videos will be saved to the `outputs` directory
+- The container includes optimized versions of xformers and flash-attention
+- Shared memory is set to 2GB for better performance
+- The container will automatically restart unless explicitly stopped
+
 # Notes
 
 Note that this GitHub repository is the only official FramePack website. We do not have any web services. All other websites are spam and fake, including but not limited to `framepack.co`, `frame_pack.co`, `framepack.net`, `frame_pack.net`, `framepack.ai`, `frame_pack.ai`, `framepack.pro`, `frame_pack.pro`, `framepack.cc`, `frame_pack.cc`,`framepackai.co`, `frame_pack_ai.co`, `framepackai.net`, `frame_pack_ai.net`, `framepackai.pro`, `frame_pack_ai.pro`, `framepackai.cc`, `frame_pack_ai.cc`, and so on. Again, they are all spam and fake. **Do not pay money or download files from any of those websites.**
@@ -290,7 +391,7 @@ Below are some more examples that you may be interested in reproducing.
 
 <img src="https://github.com/user-attachments/assets/853f4f40-2956-472f-aa7a-fa50da03ed92" width="150">
 
-`The girl suddenly took out a sign that said “cute” using right hand`
+`The girl suddenly took out a sign that said "cute" using right hand`
 
 ![image](https://github.com/user-attachments/assets/d51180e4-5537-4e25-a6c6-faecae28648a)
 
