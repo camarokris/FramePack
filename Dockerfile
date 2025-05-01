@@ -27,13 +27,6 @@ COPY requirements.txt requirements.docker.txt ./
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.docker.txt
 
-# Install PyTorch with CUDA support (specific version for compatibility)
-RUN pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
-
-# Install xformers and flash-attention
-RUN pip install --no-cache-dir ninja
-RUN pip install --no-cache-dir xformers==0.0.22.post7
-RUN pip install --no-cache-dir flash-attn==2.3.3
 
 # Copy the rest of the application
 COPY . .
