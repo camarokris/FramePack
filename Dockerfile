@@ -14,9 +14,9 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Create symbolic links for Python if they don't exist
-RUN if [ ! -f /usr/bin/python ]; then ln -s /usr/bin/python3.10 /usr/bin/python; fi && \
-    if [ ! -f /usr/bin/pip ]; then ln -s /usr/bin/pip3 /usr/bin/pip; fi
+# Create symbolic links for Python
+RUN ln -s /usr/bin/python3.10 /usr/bin/python && \
+    ln -s /usr/bin/pip3 /usr/bin/pip
 
 # Set working directory
 WORKDIR /app
@@ -27,6 +27,8 @@ COPY requirements.txt requirements.docker.txt ./
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.docker.txt
 
+# Install PyTorch with CUDA support
+#RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Copy the rest of the application
 COPY . .
